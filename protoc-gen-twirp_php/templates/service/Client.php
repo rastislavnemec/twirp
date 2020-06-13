@@ -15,8 +15,9 @@ use Psr\Http\Message\RequestFactoryInterface;
 use Psr\Http\Message\RequestInterface;
 use Psr\Http\Message\ResponseInterface;
 use Psr\Http\Message\StreamFactoryInterface;
+use Twirp\BaseClientHooks;
+use Twirp\ClientHooks;
 use Twirp\Context;
-use Twirp\Error;
 use Twirp\ErrorCode;
 
 /**
@@ -47,11 +48,17 @@ final class {{ .Service | phpServiceName .File }}Client implements {{ .Service |
      */
     private $streamFactory;
 
+    /**
+     * @var ClientHooks
+     */
+    private $hook;
+
     public function __construct(
         $addr,
         ClientInterface $httpClient = null,
         RequestFactoryInterface $requestFactory = null,
-        StreamFactoryInterface $streamFactory = null
+        StreamFactoryInterface $streamFactory = null,
+        ClientHooks $hook = null
     ) {
         if ($httpClient === null) {
             $httpClient = Psr18ClientDiscovery::find();
@@ -65,10 +72,15 @@ final class {{ .Service | phpServiceName .File }}Client implements {{ .Service |
             $streamFactory = Psr17FactoryDiscovery::findStreamFactory();
         }
 
+        if ($hook === null) {
+            $hook = new BaseClientHooks();
+        }
+
         $this->addr = $this->urlBase($addr);
         $this->httpClient = $httpClient;
         $this->requestFactory = $requestFactory;
         $this->streamFactory = $streamFactory;
+        $this->hook = $hook;
     }
 {{ range $method := .Service.Method }}
 {{- $inputType := $method.InputType | phpMessageName }}
@@ -87,6 +99,8 @@ final class {{ .Service | phpServiceName .File }}Client implements {{ .Service |
 
         $this->doProtobufRequest($ctx, $url, $in, $out);
 
+        $this->hook->responseReceived($ctx);
+
         return $out;
     }
 {{ end }}
@@ -100,8 +114,16 @@ final class {{ .Service | phpServiceName .File }}Client implements {{ .Service |
         $req = $this->newRequest($ctx, $url, $body, 'application/protobuf');
 
         try {
+            $ctx = $this->hook->requestPrepared($ctx, $req);
+        } catch (\Throwable $e) {
+            throw $this->clientError('failed to call request prepared hook', $e);
+        }
+
+        try {
             $resp = $this->httpClient->sendRequest($req);
         } catch (\Throwable $e) {
+            $this->hook->error($ctx, $e);
+
             throw $this->clientError('failed to send request', $e);
         }
 
